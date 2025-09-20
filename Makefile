@@ -1,3 +1,3 @@
 all:
-	corral run -- ponyc -Dopenssl_3.0.x -d dependapony/ 
+	corral run -- ponyc -Dopenssl_3.0.x dependapony/ 
 	./dependapony1

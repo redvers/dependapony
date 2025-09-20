@@ -6,38 +6,31 @@ use "ssl/net"
 actor GithubActor
   let auth: TCPConnectAuth
   let timeout: U32 = 60
-  let client: HTTPClient
   let main: Main tag
 
   new create(auth': TCPConnectAuth, main': Main tag) =>
     main = main'
     auth = auth'
 
+  be to_tagged_corral(o: String val, r: String val, t: String val) => None
+    let clf = recover val NotifyFactory.create(this, o, r, t) end
+    check_url(GithubTranslations.to_tagged_corral(o, r, t), clf)
+
+  be check_latest(o: String val, r: String val) =>
+    let clf = recover val NotifyFactory.create(this, o, r, "") end
+    check_url(GithubTranslations.to_latest_package(o, r), clf)
+
+  be check_url(url: String val, clf: NotifyFactory val) =>
     var sslctx: SSLContext val =
       recover val SSLContext.>set_client_verify(false) end
-
-    let dumpMaker = recover val NotifyFactory.create(this) end
-
     // The Client manages all links.
-    client = HTTPClient(
+    let client: HTTPClient = HTTPClient(
       auth,
-      dumpMaker,
+      clf,
       consume sslctx
       where keepalive_timeout_secs = timeout
     )
 
-  be check_latest(url: String val) =>
-    try
-      (var owner: String val, var repo: String val) =
-        GithubTranslations.extract_owner_repo(url)?
-        Debug.out(GithubTranslations.to_latest_package(owner, repo))
-//        check_latesturl(GithubTranslations.to_latest_package(owner, repo))
-
-    else
-      Debug.out("We failed with: " + url)
-    end
-
-  be check_latesturl(url: String val) =>
     try
       let req = Payload.request("GET", URL.valid(url)?)
       req("User-Agent") = "dependapony v0.0.1"
@@ -48,16 +41,16 @@ actor GithubActor
 
   be cancelled() => Debug.out("Got cancelled")
   be failed(f: HTTPFailureReason) => Debug.out("Got failed")
-  be have_response(r: Payload val) => Debug.out("Got have_response: " + r.status.string())
+  be have_response(p: Payload val, o: String val, r: String val, t: String val) =>
     var rv: String iso = recover iso String end
     try
-      let body = r.body()?
+      let body = p.body()?
       for piece in body.values() do
         rv.append(piece)
       end
 //      Debug.out(consume rv)
     end
-    main.data_retrieved(consume rv)
+    main.data_retrieved(consume rv, o, r, t)
 
   be have_body(b: ByteSeq val) => Debug.out("Got have_body")
   be finished() => Debug.out("Got finished")
@@ -70,12 +63,18 @@ class NotifyFactory is HandlerFactory
   Create instances of our simple Receive Handler.
   """
   let _main: GithubActor
+  let owner: String val
+  let repo: String val
+  let vtag: String val
 
-  new iso create(main': GithubActor) =>
+  new iso create(main': GithubActor, o: String val, r: String val, t: String val) =>
     _main = main'
+    owner = o
+    repo = r
+    vtag = t
 
   fun apply(session: HTTPSession): HTTPHandler ref^ =>
-    HttpNotify.create(_main, session)
+    HttpNotify.create(_main, session, owner, repo, vtag)
 
 class HttpNotify is HTTPHandler
   """
@@ -84,17 +83,23 @@ class HttpNotify is HTTPHandler
   """
   let _main: GithubActor
   let _session: HTTPSession
+  let owner: String val
+  let repo: String val
+  let vtag: String val
 
-  new ref create(main': GithubActor, session: HTTPSession) =>
+  new ref create(main': GithubActor, session: HTTPSession, o: String val, r: String val, t: String val) =>
     _main = main'
     _session = session
+    owner = o
+    repo = r
+    vtag = t
 
   fun ref apply(response: Payload val) =>
     """
     Start receiving a response.  We get the status and headers.  Body data
     *might* be available.
     """
-    _main.have_response(response)
+    _main.have_response(response, owner, repo, vtag)
 
   fun ref chunk(data: ByteSeq val) =>
     """

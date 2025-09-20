@@ -6,10 +6,6 @@ use "files"
 use "debug"
 use "regex"
 use "collections"
-//use "corral/semver/range"
-//use "corral/semver/solver"
-//use "corral/semver/utils"
-//use "corral/semver/version"
 
 actor Main
   let env: Env
@@ -17,16 +13,19 @@ actor Main
   var mylock:   LockJson
   var mylocks: Array[CorralDep] val = Array[CorralDep]
   var depmap: Map[String val, Array[(String val, String val, String val)]] = Map[String val, Array[(String val, String val, String val)]]
+  var githubactor: GithubActor tag
+  var latest: Map[String val, String val] = Map[String val, String val]
+  var githubcount: USize = 0
 
   new create(env': Env) =>
     env = env'
 
-    let githubactor: GithubActor = GithubActor(TCPConnectAuth(env.root), this)
+    githubactor = GithubActor(TCPConnectAuth(env.root), this)
     mycorral = CorralJson.from_file(FileAuth(env.root), "corral.json")
     mylock   =   LockJson.from_file(FileAuth(env.root), "lock.json")
     try
-      env.out.print("Checking against local corral.json and lock.json")
-      env.out.print("================================================\n")
+      env.out.print("Checking against local lock.json")
+      env.out.print("================================")
       mylocks = mylock.locks("local")?
     end
     for lock in mylocks.values() do
@@ -34,28 +33,22 @@ actor Main
       (var o: String val, var r: String val) =
         GithubTranslations.extract_owner_repo(lock.locator)?
       insert_dep("local", o, r, lock.version)
+      githubcount = githubcount + 1
+      githubactor.check_latest(o, r)
       else
         Debug.out("Failed to insert: " + lock.string())
       end
     end
 
-    dump_deps("local")
-
-//    try
-//      (var owner: String val, var repo: String val) =
-//        GithubTranslations.extract_owner_repo("github.com/ponylang/ssl.git")?
-//        Debug.out(GithubTranslations.to_latest_package(owner, repo))
-//    else
-//      Debug.out("Failed to build regex")
-//    end
-//    githubactor.check_latesturl("https://cultof.show/mock-latest.json")
 
   fun ref dump_deps(s: String val) =>
     for (o, r, t) in depmap.get_or_else(s, Array[(String val, String val, String val)]).values() do
-      Debug.out(s + ": " +
+      env.out.print(s + ": " +
           o + "/" +
           r + " => " +
-          t)
+          t + " [" +
+          try latest(o + "/" + r)? else "Not Found" end +
+          "]")
     end
 
 
@@ -68,18 +61,47 @@ actor Main
       depmap.insert(cur, array)
 
 
-  be data_retrieved(data: String val) =>
+  be data_retrieved(data: String val, po: String val, pr: String val, pt: String val) =>
+    githubcount = githubcount - 1
     try
       var doc: JsonDoc val = recover val JsonDoc .> parse(data)? end
       let obj = JsonExtractor(doc.data).as_object()?
-      var html_url: String val = obj("html_url")? as String val
+      try
+        var html_url: String val = obj("html_url")? as String val
 
-      (var owner: String val, var repo: String val, var vtag: String val) =
-        GithubTranslations.extract_owner_repo_tag(html_url)?
-        Debug.out("Latest Release: " +
-            owner + "/" +
-            repo + " => " +
-            vtag)
+        (var owner: String val, var repo: String val, var vtag: String val) =
+          GithubTranslations.extract_owner_repo_tag(html_url)?
+          latest.insert(po+"/"+pr, vtag)
+          // ACTIVATE
+        githubcount = githubcount + 1
+        githubactor.to_tagged_corral(owner, repo, vtag)
+      else
+        var cj: CorralJson = CorralJson.from_text(data)
+        try
+          for f in cj.deps()?.values() do
+            (var o: String val, var r: String val) =
+              GithubTranslations.extract_owner_repo(f.locator)?
+            insert_dep(po+"/"+pr+":"+pt, o, r, f.version)
+
+            if (depmap.contains(o+"/"+r+":"+f.version)) then
+              Debug.out(o+"/"+r+":"+ f.version + " is already present")
+            else
+              githubcount = githubcount + 1
+              githubactor.check_latest(o, r)
+            end
+          end
+        else
+          Debug.out("We failed to parse cj")
+        end
+      end
+      if (githubcount == 0) then
+        dump_deps("local")
+        for f in depmap.keys() do
+          if (f == "local") then continue end
+          env.out.print("")
+          dump_deps(f)
+        end
+      end
 
 
     else
@@ -95,7 +117,6 @@ primitive GithubTranslations
     (matched(1)?, matched(2)?)
 
   fun extract_owner_repo_tag(url: String val): (String val, String val, String val) ? =>
-    Debug.out(url)
     let r = Regex("github\\.com\\/([^/]+)\\/([^/]+)\\/releases\\/tag\\/(.*)")?
     let matched = r(url)?
     (matched(1)?, matched(2)?, matched(3)?)
@@ -107,10 +128,21 @@ primitive GithubTranslations
     repo +
     "/releases/latest"
 
+  fun to_tagged_corral(o: String val, r: String val, t: String val): String val =>
+    "https://raw.githubusercontent.com/" +
+        o + "/" +
+        r + "/refs/tags/" +
+        t + "/corral.json"
+
+
 
 class CorralJson
   var valid: Bool = false
   var contents: String val = ""
+  var owner: String val = ""
+  var repo: String val = ""
+  var vtag: String val = ""
+
   new from_file(auth: FileAuth, filename: String val) =>
     var fp: FilePath = FilePath(auth, filename)
     match OpenFile(fp)
@@ -120,6 +152,36 @@ class CorralJson
     else
       valid = false
     end
+
+  new from_text(s: String val) => None
+    contents = s
+
+  fun deps(): Array[CorralDep] val ? =>
+    let rv: Array[CorralDep] trn = recover trn Array[CorralDep] end
+    let doc: JsonDoc val = recover val
+      try
+        JsonDoc .> parse(contents)?
+      else
+        Debug.out("We failed to parse jsonfile: ")
+        Debug.out(contents)
+        error
+      end
+    end
+
+    for f in JsonExtractor(doc.data)("deps")?.as_array()?.values() do
+      let jo = JsonExtractor(f).as_object()?
+      let corraldep: CorralDep iso = recover iso CorralDep end
+      corraldep.locator = JsonExtractor(jo("locator")?).as_string()?
+      match JsonExtractor(jo("version")?).as_string_or_none()?
+      | let x: None => corraldep.version = ""
+      | let x: String val => corraldep.version = x
+      end
+      rv.push(consume corraldep)
+    end
+    consume rv
+
+
+
 
 
 class LockJson
