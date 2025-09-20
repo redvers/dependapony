@@ -1,0 +1,31 @@
+{
+  "packages": [
+    "dependapony"
+  ],
+  "deps": [
+    {
+      "locator": "github.com/ponylang/corral.git",
+      "version": "0.9.0"
+    },
+    {
+      "locator": "github.com/ponylang/json.git",
+      "version": "0.2.0"
+    },
+    {
+      "locator": "github.com/ponylang/regex.git",
+      "version": "1.1.6"
+    },
+    {
+      "locator": "github.com/ponylang/http.git",
+      "version": "0.6.4"
+    }
+  ],
+  "info": {
+    "description": "A pony dependency checker",
+    "homepage": "https://github.com/redvers/dependapony",
+    "license": "",
+    "documentation_url": "https://redvers.github.io/dependapony",
+    "version": "0.0.1",
+    "name": "dependapony"
+  }
+}
